@@ -4,23 +4,26 @@ import pytesseract
 import cv2
 import numpy as np
 import tkinter as tk
+from PIL import ImageGrab
+import re
 from deep_translator import GoogleTranslator
-from PIL import ImageGrab, Image
-import re  
 
-# Đường dẫn Tesseract
+# Path to Tesseract
 pytesseract.pytesseract.tesseract_cmd = r"C:\\Program Files\\Tesseract-OCR\\tesseract.exe"
 
-# Biến toàn cục
+# Globals
 capture_region = None
 selection_window = None
-is_translating = False  
+is_translating = False
 start_x = start_y = end_x = end_y = 0
-last_extracted_text = ""  # Lưu văn bản lần trước
+last_extracted_text = ""
+translation_thread = None
 
-# Hàm chọn vùng OCR
 def select_region():
     global selection_window, canvas, start_x, start_y, end_x, end_y
+
+    if selection_window:
+        return
 
     selection_window = tk.Toplevel(root)
     selection_window.attributes("-fullscreen", True)
@@ -37,7 +40,7 @@ def select_region():
 def start_selection(event):
     global start_x, start_y
     start_x, start_y = event.x, event.y
-    canvas.delete("rect")  
+    canvas.delete("rect")
 
 def update_selection(event):
     global end_x, end_y
@@ -46,40 +49,40 @@ def update_selection(event):
     canvas.create_rectangle(start_x, start_y, end_x, end_y, outline="red", width=2, tags="rect")
 
 def end_selection(event):
-    global capture_region, selection_window, is_translating
+    global capture_region, selection_window, is_translating, translation_thread
 
     end_x, end_y = event.x, event.y
+    selection_window.destroy()
+    selection_window = None
 
     if start_x == end_x or start_y == end_y:
         translation_label.config(text="Invalid selection! Try again.")
-        selection_window.destroy()
         return
 
     capture_region = (min(start_x, end_x), min(start_y, end_y), max(start_x, end_x), max(start_y, end_y))
-    selection_window.destroy()  
 
-    is_translating = True
-    threading.Thread(target=auto_translate, daemon=True).start()
+    if not is_translating:
+        is_translating = True
+        translation_thread = threading.Thread(target=auto_translate, daemon=True)
+        translation_thread.start()
 
-# Tối ưu tiền xử lý ảnh
 def preprocess_image(image):
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)  # Chuyển ảnh về grayscale
-    _, binary = cv2.threshold(gray, 150, 255, cv2.THRESH_BINARY)  # Binarization
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    blur = cv2.GaussianBlur(gray, (3, 3), 0)
+    _, binary = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
     return binary
 
-# Lọc chỉ lấy chữ tiếng Nhật
 def filter_japanese(text):
-    return "".join(re.findall(r'[\u3040-\u30FF\u4E00-\u9FFF]+', text))
+    return "".join(re.findall(r'[\u3040-\u30FF\u4E00-\u9FFF\u3000-\u303F]+', text))
 
-# Dịch tự động nhanh hơn
 def auto_translate():
     global is_translating
     while is_translating:
         capture_and_translate()
-        time.sleep(0.5)  # Giảm thời gian chờ xuống còn 0.5 giây
+        time.sleep(0.5)
 
 def capture_and_translate():
-    global last_extracted_text  
+    global last_extracted_text
 
     if not capture_region:
         return
@@ -89,31 +92,34 @@ def capture_and_translate():
     try:
         screenshot = ImageGrab.grab(bbox=(x1, y1, x2, y2))
         processed_image = preprocess_image(np.array(screenshot))
+        extracted_text = pytesseract.image_to_string(processed_image, lang="jpn", config="--psm 6 --oem 3").strip()
+        extracted_text = filter_japanese(extracted_text)
 
-        extracted_text = pytesseract.image_to_string(processed_image, lang="jpn", config="--psm 6").strip()
-        extracted_text = filter_japanese(extracted_text)  
-
-        # Chỉ dịch nếu văn bản mới khác văn bản cũ
         if extracted_text and extracted_text != last_extracted_text:
             translated_text = GoogleTranslator(source='ja', target='en').translate(extracted_text)
             translation_label.config(text=translated_text)
-            last_extracted_text = extracted_text  
+            last_extracted_text = extracted_text
+
+            with open("debug_log.txt", "a", encoding="utf-8") as f:
+                f.write(f"JP: {extracted_text}\nEN: {translated_text}\n\n")
 
     except Exception as e:
-        translation_label.config(text=f"Error: {str(e)}")
+        print(f"[ERROR] {e}")
+        translation_label.config(text="An error occurred. Check console.")
 
-# GUI
+# GUI setup
 root = tk.Tk()
-root.title("Live Translator")
+root.title("Eroge Live Translator (Google Only)")
 root.geometry("500x250")
 root.configure(bg="black")
 root.attributes("-topmost", True)
-root.attributes("-alpha", 0.8)
+root.attributes("-alpha", 0.88)
 
 select_button = tk.Button(root, text="Select Region", command=select_region)
 select_button.pack(pady=10)
 
-translation_label = tk.Label(root, text="Click 'Select Region' to start", fg="white", bg="black", font=("Arial", 16, "bold"))
+translation_label = tk.Label(root, text="Click 'Select Region' to start", fg="white", bg="black",
+                             font=("Arial", 16, "bold"), wraplength=480, justify="left")
 translation_label.pack(expand=True, fill="both")
 
 root.mainloop()
